@@ -1,0 +1,28 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/rm/autoaim/install/vision_interfaces/include/**",
+        "/home/rm/autoaim/install/armor_tracker/include/**",
+        "/home/rm/autoaim/install/armor_detector/include/**",
+        "/home/rm/autoaim/install/auto_aim_interfaces/include/**",
+        "/opt/ros/humble/include/**",
+        "/home/rm/autoaim/src/rm_auto_aim/rm_auto_aim-main/armor_detector/include/**",
+        "/home/rm/autoaim/src/rm_auto_aim/rm_auto_aim-main/armor_tracker/include/**",
+        "/home/rm/autoaim/src/vision_attacker/include/**",
+        "/home/rm/autoaim/src/vision_serial_driver/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}

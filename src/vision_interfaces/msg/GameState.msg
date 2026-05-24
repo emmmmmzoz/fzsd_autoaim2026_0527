@@ -1,0 +1,6 @@
+int32 current_robot_quantity
+int32 blood_warn_state
+int32 game_process
+float32 current_state_left_time
+uint8 is_success_ourpreempt
+uint8 is_success_enemypreempt

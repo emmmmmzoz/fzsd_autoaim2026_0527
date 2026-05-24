@@ -1,0 +1,40 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/rm/autoaim/install/vision_interfaces/include/**",
+        "/home/rm/autoaim/install/armor_tracker/include/**",
+        "/home/rm/autoaim/install/armor_detector/include/**",
+        "/home/rm/autoaim/install/auto_aim_interfaces/include/**",
+        "/home/rm/RM_Navigation/install/teb_local_planner/include/**",
+        "/home/rm/RM_Navigation/install/teb_msgs/include/**",
+        "/home/rm/RM_Navigation/install/ros2_livox_simulation/include/**",
+        "/home/rm/RM_Navigation/install/pointcloud_to_laserscan/include/**",
+        "/home/rm/RM_Navigation/install/icp_registration/include/**",
+        "/home/rm/RM_Navigation/install/fast_lio/include/**",
+        "/home/rm/RM_Navigation/install/livox_ros_driver2/include/**",
+        "/home/rm/RM_Navigation/install/linefit_ground_segmentation/include/**",
+        "/home/rm/RM_Navigation/install/imu_complementary_filter/include/**",
+        "/home/rm/RM_Navigation/install/fake_vel_transform/include/**",
+        "/home/rm/RM_Navigation/install/costmap_converter/include/**",
+        "/home/rm/RM_Navigation/install/costmap_converter_msgs/include/**",
+        "/opt/ros/humble/include/**",
+        "/home/rm/autoaim/src/rm_auto_aim/rm_auto_aim-main/armor_detector/include/**",
+        "/home/rm/autoaim/src/rm_auto_aim/rm_auto_aim-main/armor_tracker/include/**",
+        "/home/rm/autoaim/src/vision_attacker/include/**",
+        "/home/rm/autoaim/src/vision_serial_driver/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
