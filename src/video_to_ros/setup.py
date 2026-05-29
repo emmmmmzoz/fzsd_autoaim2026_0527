@@ -20,6 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'video_to_ros_node = video_to_ros.video_to_ros_node:main',
+            'angle_error_plotter = video_to_ros.angle_error_plotter:main',
         ],
     },
 )

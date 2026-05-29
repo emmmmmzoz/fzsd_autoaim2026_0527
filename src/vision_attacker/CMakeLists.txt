@@ -18,6 +18,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(angles REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
 
@@ -47,7 +48,8 @@ ament_target_dependencies(vision_attacker_lib
   tf2
   tf2_ros
   angles
-  visualization_msgs)
+  visualization_msgs
+  geometry_msgs)
 
 add_executable(vision_attacker_node src/vision_attacker_node.cpp)
 target_include_directories(vision_attacker_node PUBLIC
@@ -62,7 +64,8 @@ ament_target_dependencies(vision_attacker_node
   tf2
   tf2_ros
   angles
-  visualization_msgs)
+  visualization_msgs
+  geometry_msgs)
 
 install(TARGETS vision_attacker_node
   DESTINATION lib/${PROJECT_NAME}

@@ -45,6 +45,8 @@ Tracker_node::Tracker_node(std::string node_name) : rclcpp::Node(node_name)
     aimMarkerPub = this->create_publisher<visualization_msgs::msg::Marker>("/real_aiming_point", 10);
     aimPub = create_publisher<vision_interfaces::msg::AutoAim>(
         "/serial_driver/aim_target", rclcpp::SensorDataQoS());
+    angleErrorPub = create_publisher<geometry_msgs::msg::Vector3Stamped>(
+        "/debug/angle_error", rclcpp::SensorDataQoS());
     robotSub = create_subscription<vision_interfaces::msg::Robot>(
         "/serial_driver/robot", rclcpp::SensorDataQoS(), std::bind(&Tracker_node::robot_callback, this, std::placeholders::_1));
     targetSub = this->create_subscription<auto_aim_interfaces::msg::Target>(
@@ -193,6 +195,17 @@ void Tracker_node::target_callback(const auto_aim_interfaces::msg::Target target
         double pitch_diff = aim.aim_pitch - robotPtr->self_pitch;
     // yaw和pitch分别都小于各自阈值才开火
     aim.fire = (std::abs(yaw_diff) < yawThreshold && std::abs(pitch_diff) < pitchThreshold) ? 1 : 0;
+
+        // publish angle error for debug/plotting
+        {
+            geometry_msgs::msg::Vector3Stamped errMsg;
+            errMsg.header.stamp = now();
+            errMsg.header.frame_id = "aim_camera_optical_frame";
+            errMsg.vector.x = yaw_diff;    // yaw error in degrees
+            errMsg.vector.y = pitch_diff;  // pitch error in degrees
+            errMsg.vector.z = aim.fire;    // fire status (0 or 1)
+            angleErrorPub->publish(errMsg);
+        }
 
         aimPub->publish(aim);
     

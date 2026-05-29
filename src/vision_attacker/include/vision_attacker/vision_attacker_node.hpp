@@ -3,6 +3,7 @@
 #include <vision_interfaces/msg/robot.hpp>
 #include <vision_interfaces/msg/auto_aim.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include "auto_aim_interfaces/msg/target.hpp"
 #include "vision_attacker/outpost.hpp"
 #include <Eigen/Dense>
@@ -44,4 +45,5 @@ private:
     rclcpp::Publisher<vision_interfaces::msg::AutoAim>::SharedPtr aimPub;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr markerPub;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr aimMarkerPub;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr angleErrorPub;
 };
