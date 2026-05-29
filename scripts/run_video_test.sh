@@ -77,7 +77,8 @@ log_info "============================================"
 # ---- pre-flight checks ----
 log_step "Running pre-flight checks..."
 
-# Source ROS2
+# Source ROS2 (temporarily disable nounset — ROS2 setup.bash references unbound vars)
+set +u
 if [ -f /opt/ros/humble/setup.bash ]; then
     source /opt/ros/humble/setup.bash
 elif [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then
@@ -94,6 +95,7 @@ else
     log_error "install/setup.bash not found. Run 'colcon build --symlink-install' first."
     exit 1
 fi
+set -u
 
 # Check packages
 check_pkg() {

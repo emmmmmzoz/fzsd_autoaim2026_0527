@@ -8,15 +8,20 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Vector3Stamped
 
-HAS_DISPLAY = False
-try:
-    import matplotlib
-    matplotlib.use('TkAgg')
-    import matplotlib.pyplot as plt
-    from matplotlib.animation import FuncAnimation
-    HAS_DISPLAY = True
-except Exception:
-    plt = None
+HAS_DISPLAY = bool(os.environ.get('DISPLAY'))
+plt = None
+if HAS_DISPLAY:
+    try:
+        import matplotlib
+        matplotlib.use('TkAgg')
+        import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
+        # smoke-test: try creating a figure to catch headless-only installs
+        _test_fig = plt.figure()
+        plt.close(_test_fig)
+    except Exception:
+        HAS_DISPLAY = False
+        plt = None
 
 
 class AngleErrorPlotter(Node):
