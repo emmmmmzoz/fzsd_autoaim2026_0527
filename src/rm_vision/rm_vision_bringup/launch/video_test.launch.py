@@ -59,6 +59,12 @@ def generate_launch_description():
             'camera_info_url', default_value=default_ci,
             description='Path to camera calibration YAML'),
         DeclareLaunchArgument(
+            'respect_source_fps', default_value='false',
+            description='Clamp publish FPS to source video FPS'),
+        DeclareLaunchArgument(
+            'profile', default_value='false',
+            description='Print per-frame timing breakdown every 30 frames'),
+        DeclareLaunchArgument(
             'use_serial', default_value='true',
             description='Launch serial_driver node'),
 
@@ -76,6 +82,8 @@ def generate_launch_description():
                 'fps': LaunchConfiguration('fps'),
                 'scale': LaunchConfiguration('scale'),
                 'camera_info_url': LaunchConfiguration('camera_info_url'),
+                'respect_source_fps': LaunchConfiguration('respect_source_fps'),
+                'profile': LaunchConfiguration('profile'),
             }],
             on_exit=Shutdown(),
         ),

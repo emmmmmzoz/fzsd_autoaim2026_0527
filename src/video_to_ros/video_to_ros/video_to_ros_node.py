@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import os
-import glob
+import time
 import yaml
 
 import cv2
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from cv_bridge import CvBridge
@@ -13,11 +14,9 @@ from sensor_msgs.msg import Image, CameraInfo
 def _find_workspace_root():
     """Walk up from the install prefix to find workspace root (works with --symlink-install)."""
     import ament_index_python
-    # COLCON_PREFIX_PATH points to install dir
     prefix = os.environ.get('COLCON_PREFIX_PATH', '')
     if prefix and os.path.isdir(prefix):
         return prefix
-    # Fallback: resolve from this file's path
     current = os.path.dirname(os.path.abspath(__file__))
     for _ in range(10):
         parent = os.path.dirname(current)
@@ -47,7 +46,6 @@ def _find_video_in_workspace(video_name):
             if os.path.isfile(candidate):
                 return candidate
 
-    # Also try the video_name as-is (might already have extension)
     for videos_dir in search_dirs:
         if not os.path.isdir(videos_dir):
             continue
@@ -90,6 +88,8 @@ class VideoToRos(Node):
         self.declare_parameter('frame_id', 'aim_camera_optical_frame')
         self.declare_parameter('scale', 1.0)
         self.declare_parameter('camera_info_url', '')
+        self.declare_parameter('respect_source_fps', False)
+        self.declare_parameter('profile', False)
 
         video_path = self.get_parameter('video_path').get_parameter_value().string_value
         video_name = self.get_parameter('video_name').get_parameter_value().string_value
@@ -97,6 +97,8 @@ class VideoToRos(Node):
         self.loop = self.get_parameter('loop').get_parameter_value().bool_value
         self.frame_id = self.get_parameter('frame_id').get_parameter_value().string_value
         self.scale = self.get_parameter('scale').get_parameter_value().double_value
+        self.respect_source_fps = self.get_parameter('respect_source_fps').get_parameter_value().bool_value
+        self.profile = self.get_parameter('profile').get_parameter_value().bool_value
         camera_info_url = self.get_parameter('camera_info_url').get_parameter_value().string_value
 
         # -- resolve video path --
@@ -120,7 +122,7 @@ class VideoToRos(Node):
                 f'CameraInfo file not found: {ci_path}. '
                 f'Set camera_info_url parameter to a valid path.')
 
-        self.camera_info_msg = self._load_camera_info(ci_path)
+        self._orig_camera_info_msg = self._load_camera_info(ci_path)
 
         # -- open video --
         self.cap = cv2.VideoCapture(video_path)
@@ -130,27 +132,44 @@ class VideoToRos(Node):
         self.src_fps = self.cap.get(cv2.CAP_PROP_FPS)
         if self.src_fps <= 0:
             self.src_fps = 30.0
-        actual_fps = min(self.target_fps, self.src_fps) if self.src_fps else self.target_fps
+
+        # -- FPS logic (fixed: respect_source_fps controls clamping) --
+        if self.respect_source_fps:
+            actual_fps = min(self.target_fps, self.src_fps)
+        else:
+            actual_fps = self.target_fps
+
         self.get_logger().info(
             f'Video opened: {self.total_frames} frames, '
             f'source {self.src_fps:.1f} fps, publish {actual_fps:.1f} fps, '
-            f'scale={self.scale:.2f}, loop={self.loop}')
+            f'scale={self.scale:.2f}, loop={self.loop}, '
+            f'respect_source_fps={self.respect_source_fps}, profile={self.profile}')
+
+        # -- apply scale --
+        self._setup_scale()
+
+        # -- camera_info_msg: scaled once at init time (not every frame) --
+        self.camera_info_msg = self._build_scaled_camera_info()
 
         # -- publishers --
         self.bridge = CvBridge()
         self.image_pub = self.create_publisher(Image, '/image_raw', 10)
         self.camera_info_pub = self.create_publisher(CameraInfo, '/camera_info', 10)
 
-        # Apply scale: if scale=0, auto-scale to match CameraInfo width
-        if self.scale <= 0:
-            vid_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            self.scale = float(self.camera_info_msg.width) / max(vid_w, 1)
-            self.get_logger().info(f'Auto scale: video {vid_w}px -> camera {self.camera_info_msg.width}px, factor={self.scale:.4f}')
+        # -- profile state --
+        self._profile_frame_count = 0
+        self._profile_last_log_time = time.perf_counter()
+        self._profile_accum = {'read': 0.0, 'resize': 0.0, 'bridge': 0.0,
+                               'publish': 0.0, 'total': 0.0}
 
         # -- timer --
-        period = 1.0 / actual_fps
+        period = 1.0 / actual_fps if actual_fps > 0 else 1.0 / 30.0
         self.timer = self.create_timer(period, self._publish_frame)
         self.get_logger().info('VideoToRos ready, publishing on /image_raw + /camera_info')
+
+    # ------------------------------------------------------------------
+    # CameraInfo helpers
+    # ------------------------------------------------------------------
 
     def _load_camera_info(self, yaml_path):
         """Parse a standard ROS camera calibration YAML into a CameraInfo message."""
@@ -165,11 +184,127 @@ class VideoToRos(Node):
         msg.d = data['distortion_coefficients']['data']
         msg.r = data['rectification_matrix']['data']
         msg.p = data['projection_matrix']['data']
-        self.get_logger().info(f'CameraInfo loaded from {yaml_path}: {msg.width}x{msg.height}')
+        self.get_logger().info(
+            f'CameraInfo loaded from {yaml_path}: {msg.width}x{msg.height}')
         return msg
 
+    def _setup_scale(self):
+        """Resolve self.scale and store target dimensions."""
+        vid_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        vid_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self._orig_video_w = vid_w
+        self._orig_video_h = vid_h
+
+        if self.scale <= 0:
+            self.scale = float(self._orig_camera_info_msg.width) / max(vid_w, 1)
+            self.get_logger().info(
+                f'Auto scale: video {vid_w}x{vid_h} -> '
+                f'camera {self._orig_camera_info_msg.width}x'
+                f'{self._orig_camera_info_msg.height}, factor={self.scale:.4f}')
+
+        if self.scale != 1.0:
+            self._target_w = max(1, int(vid_w * self.scale))
+            self._target_h = max(1, int(vid_h * self.scale))
+        else:
+            self._target_w = vid_w
+            self._target_h = vid_h
+
+        self.get_logger().info(
+            f'Output resolution: {self._target_w}x{self._target_h} '
+            f'(scale={self.scale:.4f})')
+
+    def _build_scaled_camera_info(self):
+        """Return a CameraInfo message with K/P matrices scaled by self.scale.
+
+        Called once at init — never accumulates rounding error.
+        """
+        if self.scale == 1.0:
+            return self._orig_camera_info_msg
+
+        s = float(self.scale)
+        orig = self._orig_camera_info_msg
+        msg = CameraInfo()
+        msg.header = orig.header
+        msg.height = max(1, int(orig.height * s))
+        msg.width = max(1, int(orig.width * s))
+        msg.distortion_model = orig.distortion_model
+        msg.d = orig.d  # distortion is scale-invariant
+
+        # R stays identity / unchanged
+        msg.r = orig.r
+
+        # K: 3x3 row-major [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+        k = list(orig.k)
+        k[0] *= s   # fx
+        k[2] *= s   # cx
+        k[4] *= s   # fy
+        k[5] *= s   # cy
+        msg.k = k
+
+        # P: 3x4 row-major [fx', 0, cx', Tx, 0, fy', cy', Ty, 0, 0, 1, 0]
+        p = list(orig.p)
+        p[0] *= s   # fx'
+        p[2] *= s   # cx'
+        p[5] *= s   # fy'
+        p[6] *= s   # cy'
+        msg.p = p
+
+        self.get_logger().info(
+            f'Scaled CameraInfo: {orig.width}x{orig.height} -> '
+            f'{msg.width}x{msg.height} (factor={s:.4f})')
+        self.get_logger().info(
+            f'  K: [{k[0]:.2f}, 0, {k[2]:.2f}, 0, {k[4]:.2f}, {k[5]:.2f}]')
+        self.get_logger().info(
+            f'  P: [{p[0]:.2f}, 0, {p[2]:.2f}, 0, {p[5]:.2f}, {p[6]:.2f}]')
+
+        return msg
+
+    # ------------------------------------------------------------------
+    # Profiling helpers
+    # ------------------------------------------------------------------
+
+    def _profile_report(self, read_us, resize_us, bridge_us, pub_us, total_us):
+        self._profile_accum['read'] += read_us
+        self._profile_accum['resize'] += resize_us
+        self._profile_accum['bridge'] += bridge_us
+        self._profile_accum['publish'] += pub_us
+        self._profile_accum['total'] += total_us
+        self._profile_frame_count += 1
+
+        now = time.perf_counter()
+        elapsed = now - self._profile_last_log_time
+        if self._profile_frame_count >= 30 or elapsed >= 1.0:
+            n = self._profile_frame_count
+            if n == 0:
+                return
+            r = self._profile_accum['read'] / n
+            rz = self._profile_accum['resize'] / n
+            b = self._profile_accum['bridge'] / n
+            p = self._profile_accum['publish'] / n
+            t = self._profile_accum['total'] / n
+            fps_eff = 1.0 / (t / 1e6) if t > 0 else 0.0
+            self.get_logger().info(
+                f'[profile] n={n} | '
+                f'read={r:.0f}us resize={rz:.0f}us bridge={b:.0f}us '
+                f'publish={p:.0f}us | total={t:.0f}us '
+                f'({t/1000:.1f}ms) | effective_max_fps={fps_eff:.1f}')
+            self._profile_frame_count = 0
+            self._profile_last_log_time = now
+            for k in self._profile_accum:
+                self._profile_accum[k] = 0.0
+
+    # ------------------------------------------------------------------
+    # Main publish callback
+    # ------------------------------------------------------------------
+
     def _publish_frame(self):
+        t_total_start = time.perf_counter()
+
+        # -- 1. read --
+        t0 = time.perf_counter()
         ret, frame = self.cap.read()
+        t_read = time.perf_counter() - t0
+
         if not ret:
             if self.loop:
                 self.get_logger().info('Video ended, looping back to start')
@@ -183,15 +318,23 @@ class VideoToRos(Node):
                 rclpy.shutdown()
                 return
 
-        # resize
+        # -- 2. resize (skip when scale==1.0) --
+        t0 = time.perf_counter()
         if self.scale != 1.0:
-            new_w = max(1, int(frame.shape[1] * self.scale))
-            new_h = max(1, int(frame.shape[0] * self.scale))
-            frame = cv2.resize(frame, (new_w, new_h))
+            frame = cv2.resize(frame, (self._target_w, self._target_h))
+        t_resize = time.perf_counter() - t0
 
-        # publish
-        now = self.get_clock().now().to_msg()
+        # -- 3. cv_bridge conversion --
+        t0 = time.perf_counter()
+        # Ensure C-contiguous for fastest tobytes() path inside cv_bridge
+        if not frame.flags['C_CONTIGUOUS']:
+            frame = np.ascontiguousarray(frame)
         img_msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
+        t_bridge = time.perf_counter() - t0
+
+        # -- 4. stamp & publish --
+        t0 = time.perf_counter()
+        now = self.get_clock().now().to_msg()
         img_msg.header.stamp = now
         img_msg.header.frame_id = self.frame_id
 
@@ -200,6 +343,15 @@ class VideoToRos(Node):
 
         self.image_pub.publish(img_msg)
         self.camera_info_pub.publish(self.camera_info_msg)
+        t_publish = time.perf_counter() - t0
+
+        t_total = time.perf_counter() - t_total_start
+
+        # -- 5. profile report --
+        if self.profile:
+            self._profile_report(
+                t_read * 1e6, t_resize * 1e6, t_bridge * 1e6,
+                t_publish * 1e6, t_total * 1e6)
 
 
 def main(args=None):
