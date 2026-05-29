@@ -6,6 +6,7 @@ import threading
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from geometry_msgs.msg import Vector3Stamped
 
 HAS_DISPLAY = bool(os.environ.get('DISPLAY'))
@@ -15,7 +16,6 @@ if HAS_DISPLAY:
         import matplotlib
         matplotlib.use('TkAgg')
         import matplotlib.pyplot as plt
-        from matplotlib.animation import FuncAnimation
         # smoke-test: try creating a figure to catch headless-only installs
         _test_fig = plt.figure()
         plt.close(_test_fig)
@@ -54,20 +54,32 @@ class AngleErrorPlotter(Node):
             self.csv_file = None
 
         self.sub = self.create_subscription(
-            Vector3Stamped, topic, self._callback, 10)
+            Vector3Stamped, topic, self._callback,
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.BEST_EFFORT,
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=10
+            ))
 
         if HAS_DISPLAY:
             self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(10, 6))
             self.fig.canvas.manager.set_window_title('Angle Error')
-            self.line_yaw = None
-            self.line_pitch = None
-            self.ani = FuncAnimation(self.fig, self._update_plot, interval=200,
-                                     blit=False, cache_frame_data=False)
+
+            self.line_yaw, = self.ax1.plot([], [], 'b-', linewidth=1.0)
+            self.ax1.set_ylabel('Yaw Error (deg)')
+            self.ax1.set_title('Angle Error over Time')
+            self.ax1.grid(True, alpha=0.3)
+
+            self.line_pitch, = self.ax2.plot([], [], 'r-', linewidth=1.0)
+            self.ax2.set_xlabel('Time (s)')
+            self.ax2.set_ylabel('Pitch Error (deg)')
+            self.ax2.grid(True, alpha=0.3)
+
+            self.fig.tight_layout()
             self.get_logger().info('Angle error plotter started (GUI mode)')
         else:
             self.get_logger().warn(
-                'No display available (matplotlib import failed). '
-                'Running in CSV-only mode.')
+                'No display available. Running in CSV-only mode.')
             self.timer = self.create_timer(1.0, self._log_status)
 
         self.get_logger().info(
@@ -79,41 +91,33 @@ class AngleErrorPlotter(Node):
             self.t0 = t
         with self.lock:
             self.data.append((t - self.t0, msg.vector.x, msg.vector.y, msg.vector.z))
-            # Trim old data
             cutoff = t - self.t0 - self.window_sec
             while self.data and self.data[0][0] < cutoff:
                 self.data.pop(0)
-            # Write CSV
             if self.csv_writer:
                 self.csv_writer.writerow(
                     [self.data[-1][0], msg.vector.x, msg.vector.y, msg.vector.z])
 
-    def _update_plot(self, frame):
+    def _refresh_gui(self):
         with self.lock:
             if not self.data:
                 return
             ts = [d[0] for d in self.data]
             yaws = [d[1] for d in self.data]
             pitches = [d[2] for d in self.data]
+            t_last = ts[-1]
 
-        self.ax1.cla()
-        self.ax2.cla()
+        self.line_yaw.set_data(ts, yaws)
+        self.line_pitch.set_data(ts, pitches)
 
-        self.ax1.plot(ts, yaws, 'b-', linewidth=1.0)
-        self.ax1.set_ylabel('Yaw Error (deg)')
-        self.ax1.set_title('Angle Error over Time')
-        self.ax1.grid(True, alpha=0.3)
-        if ts:
-            self.ax1.set_xlim(max(0, ts[-1] - self.window_sec), max(ts[-1], self.window_sec))
-
-        self.ax2.plot(ts, pitches, 'r-', linewidth=1.0)
-        self.ax2.set_xlabel('Time (s)')
-        self.ax2.set_ylabel('Pitch Error (deg)')
-        self.ax2.grid(True, alpha=0.3)
-        if ts:
-            self.ax2.set_xlim(max(0, ts[-1] - self.window_sec), max(ts[-1], self.window_sec))
-
-        self.fig.tight_layout()
+        x_min = max(0, t_last - self.window_sec)
+        x_max = max(t_last, self.window_sec)
+        self.ax1.set_xlim(x_min, x_max)
+        self.ax2.set_xlim(x_min, x_max)
+        self.ax1.relim()
+        self.ax2.relim()
+        self.ax1.autoscale_view(scaley=True)
+        self.ax2.autoscale_view(scaley=True)
 
     def _log_status(self):
         with self.lock:
@@ -133,17 +137,27 @@ class AngleErrorPlotter(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = AngleErrorPlotter()
+
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
+
     try:
-        if HAS_DISPLAY:
-            plt.show(block=False)
-        rclpy.spin(node)
+        if HAS_DISPLAY and plt:
+            while plt.fignum_exists(node.fig.number):
+                node._refresh_gui()
+                plt.pause(0.05)
+        else:
+            while rclpy.ok():
+                time.sleep(0.5)
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
         if HAS_DISPLAY and plt:
             plt.close('all')
+        if rclpy.ok():
+            node.destroy_node()
+            rclpy.shutdown()
+        spin_thread.join(timeout=2.0)
 
 
 if __name__ == '__main__':

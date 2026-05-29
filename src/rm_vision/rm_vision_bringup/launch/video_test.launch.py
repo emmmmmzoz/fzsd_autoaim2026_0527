@@ -116,6 +116,18 @@ def generate_launch_description():
             parameters=[node_params],
         ),
 
+        # ---- static TF: aim_odom -> aim_gimbal_link (only when serial is disabled) ----
+        # When use_serial=false, vision_serial_driver doesn't publish this TF,
+        # but armor_tracker needs it to transform /detector/armors to aim_odom.
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='video_static_gimbal_tf',
+            output='screen',
+            arguments=['0', '0', '0', '0', '0', '0', 'aim_odom', 'aim_gimbal_link'],
+            condition=UnlessCondition(LaunchConfiguration('use_serial')),
+        ),
+
         # ---- serial_driver (optional, can be disabled for pure vision test) ----
         Node(
             package='vision_serial_driver',
