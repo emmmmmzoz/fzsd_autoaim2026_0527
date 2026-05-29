@@ -1,7 +1,7 @@
 import os
 import sys
 from ament_index_python.packages import get_package_share_directory
-from launch.actions import ExecuteProcess  
+from launch.actions import ExecuteProcess
 sys.path.append(os.path.join(get_package_share_directory('rm_vision_bringup'), 'launch'))
 
 
@@ -47,19 +47,17 @@ def generate_launch_description():
 
     hik_camera_node = get_camera_node('hik_camera', 'hik_camera::HikCameraNode')
 
-
-    if (launch_params['camera'] == 'hik'):
-        cam_detector = get_camera_detector_container(hik_camera_node)
+    camera = launch_params.get('camera', 'hik')
 
     delay_tracker_node = TimerAction(
         period=2.0,
         actions=[tracker_node],
     )
-    
+
     serial_driver_node = Node(
         package='vision_serial_driver',
         executable='vision_serial_driver_node',
-        parameters = [node_params],
+        parameters=[node_params],
     )
 
     attacker_node = Node(
@@ -68,10 +66,50 @@ def generate_launch_description():
         parameters=[node_params],
     )
 
-    return LaunchDescription([
-        robot_state_publisher,
-        cam_detector,
-        delay_tracker_node,
-        serial_driver_node,
-        attacker_node,
-    ])
+    if camera == 'video':
+        share_dir = get_package_share_directory('rm_vision_bringup')
+        workspace_root = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.dirname(share_dir))))
+        camera_info_path = os.path.join(share_dir, 'config', 'camera_info.yaml')
+
+        return LaunchDescription([
+            robot_state_publisher,
+            Node(
+                package='video_to_ros',
+                executable='video_to_ros_node',
+                name='video_to_ros',
+                output='screen',
+                emulate_tty=True,
+                parameters=[{
+                    'video_name': launch_params.get('video', 'test1'),
+                    'video_path': launch_params.get('video_path', ''),
+                    'loop': launch_params.get('loop', True),
+                    'fps': launch_params.get('fps', 30.0),
+                    'scale': launch_params.get('scale', 1.0),
+                    'camera_info_url': camera_info_path,
+                }],
+                on_exit=Shutdown(),
+            ),
+            Node(
+                package='armor_detector',
+                executable='armor_detector_node',
+                name='armor_detector',
+                output='screen',
+                emulate_tty=True,
+                parameters=[node_params],
+                arguments=['--ros-args', '--log-level',
+                           'armor_detector:=' + launch_params['detector_log_level']],
+            ),
+            delay_tracker_node,
+            serial_driver_node,
+            attacker_node,
+        ])
+    else:
+        cam_detector = get_camera_detector_container(hik_camera_node)
+        return LaunchDescription([
+            robot_state_publisher,
+            cam_detector,
+            delay_tracker_node,
+            serial_driver_node,
+            attacker_node,
+        ])
