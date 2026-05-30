@@ -18,6 +18,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 // STD
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -95,6 +96,33 @@ private:
   image_transport::Publisher binary_img_pub_;
   image_transport::Publisher number_img_pub_;
   image_transport::Publisher result_img_pub_;
+
+  // Performance profiling
+  bool perf_profile_;
+  double perf_profile_interval_;
+  int64_t perf_cb_count_;
+  std::chrono::steady_clock::time_point perf_last_report_wall_;
+  std::chrono::steady_clock::time_point perf_last_cb_wall_;
+  builtin_interfaces::msg::Time perf_last_img_stamp_;
+  bool perf_first_cb_;
+
+  double perf_img_stamp_dt_sum_, perf_img_stamp_dt_min_, perf_img_stamp_dt_max_;
+  double perf_wall_dt_sum_, perf_wall_dt_min_, perf_wall_dt_max_;
+  double perf_cb_total_sum_, perf_cb_total_min_, perf_cb_total_max_;
+  double perf_detect_total_sum_, perf_detect_total_min_, perf_detect_total_max_;
+  double perf_yolo_sum_, perf_yolo_min_, perf_yolo_max_;
+  double perf_bridge_sum_, perf_bridge_min_, perf_bridge_max_;
+  double perf_flip_sum_, perf_flip_min_, perf_flip_max_;
+  double perf_cvtcolor_sum_, perf_cvtcolor_min_, perf_cvtcolor_max_;
+  double perf_pnp_sum_, perf_pnp_min_, perf_pnp_max_;
+  double perf_publish_sum_, perf_publish_min_, perf_publish_max_;
+  double perf_marker_sum_, perf_marker_min_, perf_marker_max_;
+  double perf_armors_count_sum_;
+  int perf_armors_count_min_, perf_armors_count_max_;
+  int perf_skip_hint_count_;
+
+  void perf_report();
+  void perf_reset();
 };
 
 }  // namespace rm_auto_aim

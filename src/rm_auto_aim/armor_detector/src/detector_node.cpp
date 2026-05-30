@@ -17,8 +17,10 @@
 
 // STD
 #include <algorithm>
+#include <iomanip>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -83,6 +85,15 @@ ArmorDetectorNode::ArmorDetectorNode(const rclcpp::NodeOptions & options)
     createDebugPublishers();
   }
 
+  // Performance profiling
+  perf_profile_ = this->declare_parameter("perf_profile", false);
+  perf_profile_interval_ = this->declare_parameter("perf_profile_interval", 1.0);
+  if (perf_profile_) {
+    perf_reset();
+    perf_last_report_wall_ = std::chrono::steady_clock::now();
+    RCLCPP_INFO(this->get_logger(), "Performance profiling ENABLED, interval=%.1fs", perf_profile_interval_);
+  }
+
   // Task subscriber
   is_aim_task_ = true;
   task_sub_ = this->create_subscription<std_msgs::msg::String>(
@@ -136,7 +147,44 @@ void ArmorDetectorNode::taskCallback(const std_msgs::msg::String::SharedPtr task
 
 void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr img_msg)
 {
+  auto t_cb_wall_start = std::chrono::steady_clock::now();
+
+  // ---- callback frequency tracking (only when profiling) ----
+  if (perf_profile_) {
+    if (!perf_first_cb_) {
+      // Wall delta
+      double wall_dt_ms = std::chrono::duration<double, std::milli>(
+        t_cb_wall_start - perf_last_cb_wall_).count();
+      perf_wall_dt_sum_ += wall_dt_ms;
+      if (wall_dt_ms < perf_wall_dt_min_) perf_wall_dt_min_ = wall_dt_ms;
+      if (wall_dt_ms > perf_wall_dt_max_) perf_wall_dt_max_ = wall_dt_ms;
+
+      // Image stamp delta (manual math to avoid rclcpp::Time source mismatch)
+      double cur_stamp_s = static_cast<double>(img_msg->header.stamp.sec) +
+                           static_cast<double>(img_msg->header.stamp.nanosec) * 1e-9;
+      double last_stamp_s = static_cast<double>(perf_last_img_stamp_.sec) +
+                            static_cast<double>(perf_last_img_stamp_.nanosec) * 1e-9;
+      double img_dt_ms = (cur_stamp_s - last_stamp_s) * 1000.0;
+      perf_img_stamp_dt_sum_ += img_dt_ms;
+      if (img_dt_ms < perf_img_stamp_dt_min_) perf_img_stamp_dt_min_ = img_dt_ms;
+      if (img_dt_ms > perf_img_stamp_dt_max_) perf_img_stamp_dt_max_ = img_dt_ms;
+
+      // Skip hint: flag if img_stamp_dt > 2 * expected (60fps -> ~16.7ms)
+      if (img_dt_ms > 33.3) {
+        perf_skip_hint_count_++;
+      }
+    } else {
+      perf_first_cb_ = false;
+    }
+    perf_last_cb_wall_ = t_cb_wall_start;
+    perf_last_img_stamp_ = img_msg->header.stamp;
+  }
+
+  // ---- detect armors (timed) ----
+  auto t_detect_start = std::chrono::steady_clock::now();
   auto armors = detectArmors(img_msg);
+  double detect_ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - t_detect_start).count();
 
   if (pnp_solver_ != nullptr && is_aim_task_) {
     armors_msg_.header = armor_marker_.header = text_marker_.header = img_msg->header;
@@ -145,6 +193,8 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
     armor_marker_.id = 0;
     text_marker_.id = 0;
 
+    // ---- PnP loop (timed) ----
+    auto t_pnp_start = std::chrono::steady_clock::now();
     auto_aim_interfaces::msg::Armor armor_msg;
     for (const auto & armor : armors) {
       cv::Mat rvec, tvec;
@@ -201,12 +251,62 @@ void ArmorDetectorNode::imageCallback(const sensor_msgs::msg::Image::ConstShared
         RCLCPP_WARN(this->get_logger(), "PnP failed!");
       }
     }
+    double pnp_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - t_pnp_start).count();
 
-    // Publishing detected armors
+    // ---- publish armors (timed) ----
+    auto t_pub_start = std::chrono::steady_clock::now();
     armors_pub_->publish(armors_msg_);
+    double pub_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - t_pub_start).count();
 
-    // Publishing marker
+    // ---- publish markers (timed) ----
+    auto t_marker_start = std::chrono::steady_clock::now();
     publishMarkers();
+    double marker_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - t_marker_start).count();
+
+    // ---- profiling accumulation ----
+    if (perf_profile_) {
+      int n_armors = static_cast<int>(armors.size());
+
+      perf_detect_total_sum_ += detect_ms;
+      if (detect_ms < perf_detect_total_min_) perf_detect_total_min_ = detect_ms;
+      if (detect_ms > perf_detect_total_max_) perf_detect_total_max_ = detect_ms;
+
+      perf_pnp_sum_ += pnp_ms;
+      if (pnp_ms < perf_pnp_min_) perf_pnp_min_ = pnp_ms;
+      if (pnp_ms > perf_pnp_max_) perf_pnp_max_ = pnp_ms;
+
+      perf_publish_sum_ += pub_ms;
+      if (pub_ms < perf_publish_min_) perf_publish_min_ = pub_ms;
+      if (pub_ms > perf_publish_max_) perf_publish_max_ = pub_ms;
+
+      perf_marker_sum_ += marker_ms;
+      if (marker_ms < perf_marker_min_) perf_marker_min_ = marker_ms;
+      if (marker_ms > perf_marker_max_) perf_marker_max_ = marker_ms;
+
+      perf_armors_count_sum_ += n_armors;
+      if (n_armors < perf_armors_count_min_) perf_armors_count_min_ = n_armors;
+      if (n_armors > perf_armors_count_max_) perf_armors_count_max_ = n_armors;
+
+      // total callback time
+      double cb_total_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_cb_wall_start).count();
+      perf_cb_total_sum_ += cb_total_ms;
+      if (cb_total_ms < perf_cb_total_min_) perf_cb_total_min_ = cb_total_ms;
+      if (cb_total_ms > perf_cb_total_max_) perf_cb_total_max_ = cb_total_ms;
+
+      perf_cb_count_++;
+
+      // Periodic report
+      auto now_wall = std::chrono::steady_clock::now();
+      double elapsed_s = std::chrono::duration<double>(now_wall - perf_last_report_wall_).count();
+      if (elapsed_s >= perf_profile_interval_) {
+        perf_report();
+        perf_last_report_wall_ = now_wall;
+      }
+    }
   }
 }
 
@@ -287,10 +387,21 @@ std::vector<Armor> ArmorDetectorNode::detectArmors(
   const sensor_msgs::msg::Image::ConstSharedPtr & img_msg)
 {
   // Convert ROS img to cv::Mat
+  auto t_bridge_start = std::chrono::steady_clock::now();
   auto img = cv_bridge::toCvShare(img_msg, "rgb8")->image;
+  double bridge_ms = 0, flip_ms = 0, cvt_ms = 0, yolo_ms = 0;
+  if (perf_profile_) {
+    bridge_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - t_bridge_start).count();
+  }
 
   // Flip image if needed
+  auto t_flip_start = std::chrono::steady_clock::now();
   cv::flip(img, img, -1);
+  if (perf_profile_) {
+    flip_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - t_flip_start).count();
+  }
 
   std::vector<Armor> armors;
   auto final_time = this->now();
@@ -299,10 +410,20 @@ std::vector<Armor> ArmorDetectorNode::detectArmors(
   if (use_yolo_) {
     // YOLO detection mode
     // Note: YOLO expects BGR, but we have RGB from ROS, convert it
+    auto t_cvt_start = std::chrono::steady_clock::now();
     cv::Mat bgr_img;
     cv::cvtColor(img, bgr_img, cv::COLOR_RGB2BGR);
-    
+    if (perf_profile_) {
+      cvt_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_cvt_start).count();
+    }
+
+    auto t_yolo_start = std::chrono::steady_clock::now();
     armors = yolo_detector_->detect(bgr_img);
+    if (perf_profile_) {
+      yolo_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_yolo_start).count();
+    }
     
     // 按 detect_color 过滤颜色（与传统检测一致）
     int cur_detect_color = get_parameter("detect_color").as_int();
@@ -374,6 +495,25 @@ std::vector<Armor> ArmorDetectorNode::detectArmors(
     }
   }
 
+  // Accumulate internal timing breakdown
+  if (perf_profile_) {
+    perf_bridge_sum_ += bridge_ms;
+    if (bridge_ms < perf_bridge_min_) perf_bridge_min_ = bridge_ms;
+    if (bridge_ms > perf_bridge_max_) perf_bridge_max_ = bridge_ms;
+
+    perf_flip_sum_ += flip_ms;
+    if (flip_ms < perf_flip_min_) perf_flip_min_ = flip_ms;
+    if (flip_ms > perf_flip_max_) perf_flip_max_ = flip_ms;
+
+    perf_cvtcolor_sum_ += cvt_ms;
+    if (cvt_ms < perf_cvtcolor_min_) perf_cvtcolor_min_ = cvt_ms;
+    if (cvt_ms > perf_cvtcolor_max_) perf_cvtcolor_max_ = cvt_ms;
+
+    perf_yolo_sum_ += yolo_ms;
+    if (yolo_ms < perf_yolo_min_) perf_yolo_min_ = yolo_ms;
+    if (yolo_ms > perf_yolo_max_) perf_yolo_max_ = yolo_ms;
+  }
+
   return armors;
 }
 
@@ -405,6 +545,69 @@ void ArmorDetectorNode::publishMarkers()
   armor_marker_.action = armors_msg_.armors.empty() ? Marker::DELETE : Marker::ADD;
   marker_array_.markers.emplace_back(armor_marker_);
   marker_pub_->publish(marker_array_);
+}
+
+void ArmorDetectorNode::perf_reset()
+{
+  perf_cb_count_ = 0;
+  perf_skip_hint_count_ = 0;
+
+  perf_img_stamp_dt_sum_ = 0; perf_img_stamp_dt_min_ = 1e9; perf_img_stamp_dt_max_ = 0;
+  perf_wall_dt_sum_ = 0; perf_wall_dt_min_ = 1e9; perf_wall_dt_max_ = 0;
+  perf_cb_total_sum_ = 0; perf_cb_total_min_ = 1e9; perf_cb_total_max_ = 0;
+  perf_detect_total_sum_ = 0; perf_detect_total_min_ = 1e9; perf_detect_total_max_ = 0;
+  perf_yolo_sum_ = 0; perf_yolo_min_ = 1e9; perf_yolo_max_ = 0;
+  perf_bridge_sum_ = 0; perf_bridge_min_ = 1e9; perf_bridge_max_ = 0;
+  perf_flip_sum_ = 0; perf_flip_min_ = 1e9; perf_flip_max_ = 0;
+  perf_cvtcolor_sum_ = 0; perf_cvtcolor_min_ = 1e9; perf_cvtcolor_max_ = 0;
+  perf_pnp_sum_ = 0; perf_pnp_min_ = 1e9; perf_pnp_max_ = 0;
+  perf_publish_sum_ = 0; perf_publish_min_ = 1e9; perf_publish_max_ = 0;
+  perf_marker_sum_ = 0; perf_marker_min_ = 1e9; perf_marker_max_ = 0;
+  perf_armors_count_sum_ = 0; perf_armors_count_min_ = 9999; perf_armors_count_max_ = 0;
+}
+
+void ArmorDetectorNode::perf_report()
+{
+  if (perf_cb_count_ == 0) return;
+
+  double n = static_cast<double>(perf_cb_count_);
+  double elapsed = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - perf_last_report_wall_).count();
+  double cb_fps = elapsed > 0 ? n / elapsed : 0;
+
+  auto avg = [](double sum, double c) { return c > 0 ? sum / c : 0; };
+
+  std::stringstream ss;
+  ss << "\n[detector_profile]";
+  ss << "\ncb_fps=" << std::fixed << std::setprecision(1) << cb_fps;
+  ss << "\nimg_stamp_dt_avg=" << std::fixed << std::setprecision(1) << avg(perf_img_stamp_dt_sum_, n)
+     << "ms  min=" << perf_img_stamp_dt_min_ << "  max=" << perf_img_stamp_dt_max_;
+  ss << "\nwall_dt_avg=" << std::fixed << std::setprecision(1) << avg(perf_wall_dt_sum_, n)
+     << "ms  min=" << perf_wall_dt_min_ << "  max=" << perf_wall_dt_max_;
+  ss << "\ncallback_total_avg=" << std::fixed << std::setprecision(1) << avg(perf_cb_total_sum_, n)
+     << "ms  min=" << perf_cb_total_min_ << "  max=" << perf_cb_total_max_;
+  ss << "\ndetect_total_avg=" << std::fixed << std::setprecision(1) << avg(perf_detect_total_sum_, n)
+     << "ms  min=" << perf_detect_total_min_ << "  max=" << perf_detect_total_max_;
+  ss << "\n  bridge_avg=" << std::fixed << std::setprecision(1) << avg(perf_bridge_sum_, n)
+     << "ms  flip_avg=" << avg(perf_flip_sum_, n)
+     << "ms  cvtcolor_avg=" << avg(perf_cvtcolor_sum_, n) << "ms";
+  ss << "\n  yolo_avg=" << std::fixed << std::setprecision(1) << avg(perf_yolo_sum_, n)
+     << "ms  min=" << perf_yolo_min_ << "  max=" << perf_yolo_max_;
+  ss << "\npnp_avg=" << std::fixed << std::setprecision(1) << avg(perf_pnp_sum_, n)
+     << "ms  min=" << perf_pnp_min_ << "  max=" << perf_pnp_max_;
+  ss << "\npublish_avg=" << std::fixed << std::setprecision(3) << avg(perf_publish_sum_, n)
+     << "ms  min=" << perf_publish_min_ << "  max=" << perf_publish_max_;
+  ss << "\nmarker_avg=" << std::fixed << std::setprecision(3) << avg(perf_marker_sum_, n)
+     << "ms  min=" << perf_marker_min_ << "  max=" << perf_marker_max_;
+  ss << "\narmors_avg=" << std::fixed << std::setprecision(1) << avg(perf_armors_count_sum_, n)
+     << "  min=" << perf_armors_count_min_ << "  max=" << perf_armors_count_max_;
+  ss << "\ndropped_or_skipped_hint: skipped_frames=" << perf_skip_hint_count_
+     << " (img_stamp_dt > 33.3ms, i.e. >2x 60fps period)";
+
+  RCLCPP_INFO(this->get_logger(), "%s", ss.str().c_str());
+
+  perf_reset();
+  perf_last_report_wall_ = std::chrono::steady_clock::now();
 }
 
 }  // namespace rm_auto_aim
